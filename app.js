@@ -1655,7 +1655,16 @@
     });
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Uyeler');
-    XLSX.writeFile(workbook, buildExportFileName('uye-raporu', data.length, 'xlsx'));
+    const workbookBuffer = XLSX.write(workbook, {
+      bookType: 'xlsx',
+      type: 'array',
+      cellStyles: true
+    });
+    downloadBlob(
+      buildExportFileName('uye-raporu', data.length, 'xlsx'),
+      workbookBuffer,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
   }
 
   function getPrimaryRecordTitle(item, index) {
@@ -1841,17 +1850,15 @@
     `;
   }
 
-  function waitForContainerImages(container) {
-    const images = [...container.querySelectorAll('img')].filter(img => img.getAttribute('src'));
-    if (!images.length) return Promise.resolve();
-    return Promise.all(images.map(img => new Promise(resolve => {
-      if (img.complete) {
-        resolve();
-        return;
-      }
-      img.addEventListener('load', resolve, { once: true });
-      img.addEventListener('error', resolve, { once: true });
-    })));
+  function loadPdfImageData(src) {
+    const value = String(nv(src, '')).trim();
+    if (!/^data:image\//i.test(value)) return Promise.resolve(null);
+    return new Promise(resolve => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = value;
+    });
   }
 
   async function exportRowsAsPdf(data, reportTitle = 'Uye Raporu') {
@@ -1863,41 +1870,130 @@
       alert('PDF aracı yüklenemedi.');
       return;
     }
-    const container = document.createElement('div');
-    container.style.position = 'fixed';
-    container.style.left = '-20000px';
-    container.style.top = '0';
-    container.style.zIndex = '-1';
-    container.innerHTML = buildPdfReportMarkup(data, reportTitle);
-    document.body.appendChild(container);
-    try {
-      await waitForContainerImages(container);
-      const canvas = await html2canvas(container.firstElementChild, {
-        backgroundColor: '#f8fbff',
-        scale: 1.6,
-        useCORS: true
-      });
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = pageWidth;
-      const imgHeight = canvas.height * imgWidth / canvas.width;
-      const imgData = canvas.toDataURL('image/jpeg', 0.92);
-      let heightLeft = imgHeight;
-      let position = 0;
-      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-      heightLeft -= pageHeight;
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-        heightLeft -= pageHeight;
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 12;
+    const contentWidth = pageWidth - (margin * 2);
+    const lineHeight = 5;
+
+    const ensureSpace = heightNeeded => {
+      if (cursorY + heightNeeded <= pageHeight - margin) return;
+      pdf.addPage();
+      cursorY = margin;
+    };
+
+    const drawChip = (text, x, y, fillColor, textColor = [15, 23, 42]) => {
+      const chipWidth = Math.min(Math.max(pdf.getTextWidth(text) + 8, 24), contentWidth - (x - margin));
+      pdf.setFillColor(...fillColor);
+      pdf.roundedRect(x, y, chipWidth, 7, 3, 3, 'F');
+      pdf.setTextColor(...textColor);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      pdf.text(text, x + 4, y + 4.8);
+      return chipWidth;
+    };
+
+    const drawDetailItem = (label, value, x, y, width) => {
+      const safeValue = formatExportValue(value);
+      const valueLines = pdf.splitTextToSize(safeValue, width - 6);
+      const boxHeight = Math.max(15, 7 + (valueLines.length * 4.2));
+      pdf.setDrawColor(226, 232, 240);
+      pdf.setFillColor(248, 250, 252);
+      pdf.roundedRect(x, y, width, boxHeight, 2.5, 2.5, 'FD');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      pdf.setTextColor(30, 58, 138);
+      pdf.text(label.toUpperCase(), x + 3, y + 4.5);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(9);
+      pdf.setTextColor(15, 23, 42);
+      pdf.text(valueLines, x + 3, y + 9);
+      return boxHeight;
+    };
+
+    let cursorY = margin;
+
+    pdf.setFillColor(15, 23, 42);
+    pdf.roundedRect(margin, cursorY, contentWidth, 24, 6, 6, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(20);
+    pdf.text(reportTitle, margin + 6, cursorY + 9);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(10);
+    pdf.text(`Olusturulma: ${tarih()} | Kayit sayisi: ${data.length}`, margin + 6, cursorY + 16);
+    cursorY += 32;
+
+    for (let index = 0; index < data.length; index += 1) {
+      const item = data[index];
+      const detailRows = buildPdfFieldRows(item);
+      const imageSource = String(nv(item.veri[0], '')).trim();
+      const image = await loadPdfImageData(imageSource);
+      const cardStartY = cursorY;
+      const cardHeightEstimate = 42 + (Math.ceil(detailRows.length / 2) * 22);
+      ensureSpace(Math.min(cardHeightEstimate, pageHeight - (margin * 2)));
+
+      pdf.setDrawColor(219, 229, 243);
+      pdf.setFillColor(255, 255, 255);
+      pdf.roundedRect(margin, cursorY, contentWidth, 34, 6, 6, 'FD');
+      pdf.setFillColor(239, 246, 255);
+      pdf.roundedRect(margin + 1, cursorY + 1, contentWidth - 2, 32, 5, 5, 'F');
+
+      let textStartX = margin + 5;
+      if (image) {
+        try {
+          pdf.addImage(image, 'JPEG', margin + 4, cursorY + 4, 28, 28, undefined, 'FAST');
+          textStartX = margin + 37;
+        } catch (error) {
+        }
       }
-      pdf.save(buildExportFileName('uye-raporu', data.length, 'pdf'));
-    } finally {
-      container.remove();
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(15);
+      pdf.setTextColor(15, 23, 42);
+      pdf.text(getPrimaryRecordTitle(item, index), textStartX, cursorY + 8);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(10);
+      pdf.text(formatExportValue(item.veri[7] || item.veri[10] || 'Kayit detayi'), textStartX, cursorY + 15);
+
+      let chipX = textStartX;
+      const chipY = cursorY + 20;
+      chipX += drawChip(`Oy: ${formatExportValue(item.oy)}`, chipX, chipY, item.oy === 'EVET'
+        ? [220, 252, 231]
+        : item.oy === 'ORTA'
+          ? [254, 243, 199]
+          : item.oy === 'HAYIR'
+            ? [254, 226, 226]
+            : [226, 232, 240]) + 3;
+      chipX += drawChip(`Bildirim: ${formatExportValue(item.bildirim)}`, chipX, chipY, item.bildirim === 'EVET' ? [219, 234, 254] : [241, 245, 249]) + 3;
+      drawChip(`Ilce: ${formatExportValue(item.veri[9])}`, chipX, chipY, [241, 245, 249]);
+
+      cursorY += 40;
+
+      const columnGap = 6;
+      const columnWidth = (contentWidth - columnGap) / 2;
+      for (let rowIndex = 0; rowIndex < detailRows.length; rowIndex += 2) {
+        const left = detailRows[rowIndex];
+        const right = detailRows[rowIndex + 1];
+        const leftHeight = drawDetailItem(left[0], left[1], margin, cursorY, columnWidth);
+        const rightHeight = right ? drawDetailItem(right[0], right[1], margin + columnWidth + columnGap, cursorY, columnWidth) : leftHeight;
+        cursorY += Math.max(leftHeight, rightHeight) + 4;
+        if (rowIndex < detailRows.length - 2) ensureSpace(24);
+      }
+
+      pdf.setDrawColor(203, 213, 225);
+      pdf.line(margin, cursorY, margin + contentWidth, cursorY);
+      cursorY += 8;
+
+      if (index < data.length - 1 && cursorY > pageHeight - 50) {
+        pdf.addPage();
+        cursorY = margin;
+      }
     }
+
+    pdf.save(buildExportFileName('uye-raporu', data.length, 'pdf'));
   }
 
   function paylasSecilenleri(format) {
