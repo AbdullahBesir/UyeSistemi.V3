@@ -1,10 +1,11 @@
-﻿(function() {
+(function() {
   try {
     window.localStorage.removeItem('uye_logged_in');
   } catch (error) {
   }
 
   const SUPABASE_PROFILE_TABLE = 'profiles';
+  const DEFAULT_LOGIN_EMAIL = 'besir.simsek.362@gmail.com';
   const AUTH_HASH_ITERATIONS = 120000;
   const DATA_KEY_ITERATIONS = 180000;
   const CURRENT_SCHEMA_VERSION = 3;
@@ -674,10 +675,10 @@
   }
 
   async function login() {
-    const username = qs('user').value.trim().toLocaleLowerCase('tr-TR');
+    const email = qs('user').value.trim().toLocaleLowerCase('tr-TR');
     const password = qs('pass').value;
     clearLoginStatus();
-    if (!username || !password) {
+    if (!email || !password) {
       qs('loginError').textContent = 'E-posta ve sifre zorunlu.';
       return;
     }
@@ -685,14 +686,14 @@
       qs('loginError').textContent = 'Supabase ayarlari eksik. supabase-config.js dosyasini doldur.';
       return;
     }
-    if (username.indexOf('@') === -1) {
+    if (email.indexOf('@') === -1) {
       qs('loginError').textContent = 'Supabase girisi icin e-posta kullan.';
       return;
     }
     setLoginControlsDisabled(true);
     try {
       const { data, error } = await supabaseClient.auth.signInWithPassword({
-        email: username,
+        email,
         password
       });
       if (error) throw error;
@@ -1623,7 +1624,7 @@
     });
     renderTableHeader();
     await seedDefaultUsers();
-    qs('user').value = '';
+    qs('user').value = DEFAULT_LOGIN_EMAIL;
     await refreshLoginStateForUser(qs('user').value.trim());
     qs('user').addEventListener('input', async () => refreshLoginStateForUser(qs('user').value.trim()));
     qs('user').addEventListener('keydown', event => { if (event.key === 'Enter') login(); });
