@@ -804,8 +804,8 @@
     <div class="login-box">
       <h1>Üye Yönetim Sistemi</h1>
       <p>Panele giriş yapmak için Supabase hesabınla giriş yap.</p>
-      <input id="user" placeholder="E-posta" />
-      <input id="pass" placeholder="Şifre" type="password" />
+      <input id="user" type="email" inputmode="email" autocomplete="username" placeholder="E-posta" value="besir.simsek.362@gmail.com" />
+      <input id="pass" placeholder="Şifre" type="password" autocomplete="current-password" />
       <button id="loginButton" type="button" onclick="login()">Giriş Yap</button>
       <div id="loginError"></div>
       <div id="loginMeta"></div>
