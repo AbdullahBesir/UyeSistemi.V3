@@ -137,6 +137,7 @@
   let kayitlar = cloneDefaultNameRecords();
   let loginLockInterval = null;
   let notificationPriorityEnabled = false;
+  let activeContextMenuCleanup = null;
   const supabaseConfig = window.SUPABASE_CONFIG || {};
   const supabaseClient = window.supabase && supabaseConfig.url && supabaseConfig.anonKey
     ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
@@ -854,6 +855,7 @@
     if (!row) return;
     row.dataset.notification = isActive ? 'EVET' : 'HAYIR';
     row.classList.toggle('row-notification-active', isActive);
+    if (!isActive) clearCellNotification(row);
     const button = row.querySelector('.notification-toggle');
     if (button) {
       button.dataset.value = row.dataset.notification;
@@ -863,20 +865,13 @@
         ? 'Bildirim işaretini kaldırmak için tıkla.'
         : 'Satırı bildirimli olarak işaretlemek için tıkla.';
     }
-    if (options.flash) {
-      clearCellNotification(row);
-      row.classList.add('row-notification-flash');
-      row.__notificationTimer = window.setTimeout(() => {
-        clearCellNotification(row);
-      }, CELL_NOTIFICATION_DURATION_MS);
-    }
   }
 
   function satirBildirimGoster(btn) {
     const row = btn && btn.closest ? btn.closest('tr') : null;
     if (!row) return;
     const nextState = row.dataset.notification !== 'EVET';
-    setNotificationState(row, nextState, { flash: nextState });
+    setNotificationState(row, nextState);
     autoSaveDraft();
     filtre();
   }
@@ -1265,6 +1260,9 @@
     menu.style.left = event.clientX + 'px';
     menu.style.top = event.clientY + 'px';
     document.body.appendChild(menu);
+    menu.addEventListener('mousedown', e => e.stopPropagation());
+    menu.addEventListener('click', e => e.stopPropagation());
+    menu.addEventListener('contextmenu', e => e.stopPropagation());
     const input = menu.querySelector('#contextFilterInput');
     input.focus();
     input.addEventListener('keydown', e => {
@@ -1289,10 +1287,18 @@
         contextMenuKapat();
       };
     }
-    setTimeout(() => document.addEventListener('click', contextMenuKapat, { once: true }), 0);
+    const handleOutsidePointer = e => {
+      if (!menu.contains(e.target)) contextMenuKapat();
+    };
+    activeContextMenuCleanup = () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      activeContextMenuCleanup = null;
+    };
+    setTimeout(() => document.addEventListener('mousedown', handleOutsidePointer), 0);
   }
 
   function contextMenuKapat() {
+    if (activeContextMenuCleanup) activeContextMenuCleanup();
     document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
   }
 
@@ -1524,6 +1530,15 @@
     ];
   }
 
+  function formatExportValue(value, placeholder = '-') {
+    const normalized = String(nv(value, '')).trim();
+    return normalized || placeholder;
+  }
+
+  function hasExportImage(value) {
+    return Boolean(String(nv(value, '')).trim());
+  }
+
   function getVoteRowColor(item) {
     if (item.aski === 'EVET' || item.ikiYil === 'EVET') return '#e2e8f0';
     if (item.oy === 'EVET') return '#dcfce7';
@@ -1550,10 +1565,10 @@
   }
 
   function buildExcelHtml(data, reportTitle) {
-    const rowsHtml = data.map((item, rowIndex) => `
+    const rowsHtml = data.map(item => `
       <tr style="background:${getVoteRowColor(item)};">
         ${buildRowExportArray(item).map(value => `
-          <td style="border:1px solid #cbd5e1;padding:8px 10px;vertical-align:top;">${escapeHtml(value)}</td>
+          <td style="border:1px solid #cbd5e1;padding:8px 10px;vertical-align:top;color:#0f172a;">${escapeHtml(formatExportValue(value))}</td>
         `).join('')}
       </tr>
     `).join('');
@@ -1568,10 +1583,10 @@
             .sheet p { margin: 0 0 18px; color: #475569; }
             table { border-collapse: collapse; width: 100%; }
             th {
-              background: linear-gradient(180deg, #1d4ed8, #1e3a8a);
-              color: #ffffff;
+              background: #dbe5f3;
+              color: #0f172a;
               font-weight: 700;
-              border: 1px solid #93c5fd;
+              border: 1px solid #94a3b8;
               padding: 10px;
               text-align: left;
             }
@@ -1611,7 +1626,7 @@
   }
 
   function buildPdfFieldRows(item) {
-    const rows = [
+    return [
       ['Üye Sicil', item.veri[1]],
       ['Ticaret Sicil', item.veri[2]],
       ['Mersis No', item.veri[3]],
@@ -1652,8 +1667,7 @@
       ['Oy', item.oy],
       ['Bildirim Durumu', item.bildirim],
       ['Tablo Tarihi', item.tarih]
-    ];
-    return rows.filter(([, value]) => String(nv(value, '')).trim() !== '');
+    ].map(([label, value]) => [label, formatExportValue(value)]);
   }
 
   function buildPdfReportMarkup(data, reportTitle) {
@@ -1704,6 +1718,7 @@
         .pdf-record-summary h2 {
           margin: 0 0 8px;
           font-size: 28px;
+          color: #0f172a;
         }
         .pdf-record-meta {
           display: flex;
@@ -1765,18 +1780,19 @@
           `).join('');
           const voteClass = item.oy === 'EVET' ? 'vote-evet' : item.oy === 'ORTA' ? 'vote-orta' : item.oy === 'HAYIR' ? 'vote-hayir' : 'vote-sec';
           const imageValue = String(nv(item.veri[0], '')).trim();
+          const hasImage = hasExportImage(imageValue);
           return `
             <section class="pdf-record">
-              <div class="pdf-record-head">
-                ${imageValue ? `<img class="pdf-record-photo" src="${escapeHtml(imageValue)}" alt="${escapeHtml(getPrimaryRecordTitle(item, index))}" onerror="this.style.display='none'">` : `<div class="pdf-record-photo"></div>`}
+              <div class="pdf-record-head" style="grid-template-columns:${hasImage ? '180px 1fr' : '1fr'};">
+                ${hasImage ? `<img class="pdf-record-photo" src="${escapeHtml(imageValue)}" alt="${escapeHtml(getPrimaryRecordTitle(item, index))}" onerror="this.remove()">` : ''}
                 <div class="pdf-record-summary">
                   <h2>${escapeHtml(getPrimaryRecordTitle(item, index))}</h2>
-                  <div>${escapeHtml(item.veri[7] || item.veri[10] || 'Kayit detayi')}</div>
+                  <div>${escapeHtml(formatExportValue(item.veri[7] || item.veri[10] || 'Kayit detayi'))}</div>
                   <div class="pdf-record-meta">
-                    <span class="pdf-chip ${voteClass}">Oy: ${escapeHtml(item.oy)}</span>
-                    <span class="pdf-chip ${item.bildirim === 'EVET' ? 'notice-on' : 'notice-off'}">Bildirim: ${escapeHtml(item.bildirim)}</span>
-                    <span class="pdf-chip notice-off">İlçe: ${escapeHtml(item.veri[9] || '-')}</span>
-                    <span class="pdf-chip notice-off">Tarih: ${escapeHtml(item.tarih)}</span>
+                    <span class="pdf-chip ${voteClass}">Oy: ${escapeHtml(formatExportValue(item.oy))}</span>
+                    <span class="pdf-chip ${item.bildirim === 'EVET' ? 'notice-on' : 'notice-off'}">Bildirim: ${escapeHtml(formatExportValue(item.bildirim))}</span>
+                    <span class="pdf-chip notice-off">İlçe: ${escapeHtml(formatExportValue(item.veri[9]))}</span>
+                    <span class="pdf-chip notice-off">Tarih: ${escapeHtml(formatExportValue(item.tarih))}</span>
                   </div>
                 </div>
               </div>
