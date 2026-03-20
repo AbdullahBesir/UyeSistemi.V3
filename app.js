@@ -50,7 +50,11 @@
   const SHARE_COLUMN_INDEX = COLUMN_TITLES.length + 1;
   const ACTION_COLUMN_INDEX = COLUMN_TITLES.length + 2;
   const HEADER_TITLES = ['Resim (Üye Resmi)', ...COLUMN_TITLES.slice(1)];
-  const EXPORT_COLUMN_TITLES = [...HEADER_TITLES, 'Bildirim Durumu'];
+  const NOTIFICATION_EXPORT_TITLE = 'Bildirim Durumu';
+  const EXPORT_COLUMN_TITLES = [...HEADER_TITLES, NOTIFICATION_EXPORT_TITLE];
+  const PDF_FONT_FAMILY = 'NotoSans';
+  const PDF_FONT_REGULAR_VFS = 'NotoSans-Regular.ttf';
+  const PDF_FONT_BOLD_VFS = 'NotoSans-Bold.ttf';
   const TABLE_INDEX = {
     ULUSAL: 26,
     ZIYARET1: 27,
@@ -138,6 +142,7 @@
   let loginLockInterval = null;
   let notificationPriorityEnabled = false;
   let activeContextMenuCleanup = null;
+  let pdfFontLoadPromise = null;
   const supabaseConfig = window.SUPABASE_CONFIG || {};
   const supabaseClient = window.supabase && supabaseConfig.url && supabaseConfig.anonKey
     ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
@@ -1522,12 +1527,56 @@
     renderRows([]);
   }
 
-  function buildRowExportArray(item) {
-    return [
-      ...item.veri, item.ulusal, item.ziyaret1, item.ziyaret1Not, item.ziyaret1Tarih,
-      item.ziyaret2, item.ziyaret2Not, item.ziyaret2Tarih, item.telefonGorusmesi,
-      item.telefonGorusmesiNot, item.telefonGorusmesiTarih, item.aski, item.ikiYil, item.oy, item.tarih, item.bildirim
-    ];
+  function getColumnValueByIndex(item, index) {
+    if (index >= 0 && index < BASE_VALUE_COUNT) return item.veri[index];
+    switch (index) {
+      case TABLE_INDEX.ULUSAL: return item.ulusal;
+      case TABLE_INDEX.ZIYARET1: return item.ziyaret1;
+      case TABLE_INDEX.ZIYARET1_NOT: return item.ziyaret1Not;
+      case TABLE_INDEX.ZIYARET1_TARIH: return item.ziyaret1Tarih;
+      case TABLE_INDEX.ZIYARET2: return item.ziyaret2;
+      case TABLE_INDEX.ZIYARET2_NOT: return item.ziyaret2Not;
+      case TABLE_INDEX.ZIYARET2_TARIH: return item.ziyaret2Tarih;
+      case TABLE_INDEX.TELEFON: return item.telefonGorusmesi;
+      case TABLE_INDEX.TELEFON_NOT: return item.telefonGorusmesiNot;
+      case TABLE_INDEX.TELEFON_TARIH: return item.telefonGorusmesiTarih;
+      case TABLE_INDEX.ASKI: return item.aski;
+      case TABLE_INDEX.IKI_YIL: return item.ikiYil;
+      case TABLE_INDEX.OY: return item.oy;
+      case TABLE_INDEX.TARIH: return item.tarih;
+      default: return '';
+    }
+  }
+
+  function getExportColumnTitle(index) {
+    return HEADER_TITLES[index] || COLUMN_TITLES[index] || `Sütun ${index + 1}`;
+  }
+
+  function getVisibleExportColumns() {
+    const hidden = new Set(normalizeHiddenColumns(state.userData.hiddenColumns || []));
+    return COLUMN_TITLES
+      .map((_, index) => index)
+      .filter(index => !hidden.has(index))
+      .map(index => ({
+        index,
+        title: getExportColumnTitle(index)
+      }));
+  }
+
+  function getVisibleExportTitles(visibleColumns = getVisibleExportColumns(), options = {}) {
+    const titles = visibleColumns.map(column => column.title);
+    if (options.includeNotification !== false) titles.push(NOTIFICATION_EXPORT_TITLE);
+    return titles;
+  }
+
+  function getVisibleColumnIndexSet(visibleColumns = getVisibleExportColumns()) {
+    return new Set(visibleColumns.map(column => column.index));
+  }
+
+  function buildRowExportArray(item, visibleColumns = getVisibleExportColumns(), options = {}) {
+    const values = visibleColumns.map(column => getColumnValueByIndex(item, column.index));
+    if (options.includeNotification !== false) values.push(item.bildirim);
+    return values;
   }
 
   function formatExportValue(value, placeholder = '-') {
@@ -1565,9 +1614,11 @@
   }
 
   function buildExcelHtml(data, reportTitle) {
+    const visibleColumns = getVisibleExportColumns();
+    const exportTitles = getVisibleExportTitles(visibleColumns);
     const rowsHtml = data.map(item => `
       <tr style="background:${getVoteRowColor(item)};">
-        ${buildRowExportArray(item).map(value => `
+        ${buildRowExportArray(item, visibleColumns).map(value => `
           <td style="border:1px solid #cbd5e1;padding:8px 10px;vertical-align:top;color:#0f172a;">${escapeHtml(formatExportValue(value))}</td>
         `).join('')}
       </tr>
@@ -1598,7 +1649,7 @@
             <p>Olusturulma: ${escapeHtml(tarih())} | Satir sayisi: ${data.length}</p>
             <table>
               <thead>
-                <tr>${EXPORT_COLUMN_TITLES.map(title => `<th>${escapeHtml(title)}</th>`).join('')}</tr>
+                <tr>${exportTitles.map(title => `<th>${escapeHtml(title)}</th>`).join('')}</tr>
               </thead>
               <tbody>${rowsHtml}</tbody>
             </table>
@@ -1608,7 +1659,7 @@
     `;
   }
 
-  function exportRowsAsExcel(data, reportTitle = 'Uye Raporu') {
+  function exportRowsAsExcel(data, reportTitle = 'Üye Raporu') {
     if (!data.length) {
       alert('Dışa aktarılacak satır bulunamadı.');
       return;
@@ -1617,18 +1668,17 @@
       alert('Excel aracı yüklenemedi.');
       return;
     }
-    const rows = [
-      EXPORT_COLUMN_TITLES,
-      ...data.map(item => buildRowExportArray(item).map(value => formatExportValue(value)))
-    ];
+    const visibleColumns = getVisibleExportColumns();
+    const exportTitles = getVisibleExportTitles(visibleColumns);
+    const rows = [exportTitles, ...data.map(item => buildRowExportArray(item, visibleColumns).map(value => formatExportValue(value)))];
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     worksheet['!autofilter'] = {
       ref: XLSX.utils.encode_range({
         s: { r: 0, c: 0 },
-        e: { r: rows.length - 1, c: EXPORT_COLUMN_TITLES.length - 1 }
+        e: { r: rows.length - 1, c: exportTitles.length - 1 }
       })
     };
-    worksheet['!cols'] = EXPORT_COLUMN_TITLES.map((title, columnIndex) => {
+    worksheet['!cols'] = exportTitles.map((title, columnIndex) => {
       const maxCellLength = rows.reduce((max, row) => Math.max(max, String(nv(row[columnIndex], '')).length), title.length);
       return { wch: Math.min(Math.max(maxCellLength + 2, 12), 28) };
     });
@@ -1643,7 +1693,7 @@
     });
     data.forEach((item, rowIndex) => {
       const fillColor = getVoteRowColor(item).replace('#', '').toUpperCase();
-      buildRowExportArray(item).forEach((_, columnIndex) => {
+      buildRowExportArray(item, visibleColumns).forEach((_, columnIndex) => {
         const cellRef = XLSX.utils.encode_cell({ r: rowIndex + 1, c: columnIndex });
         if (worksheet[cellRef]) {
           worksheet[cellRef].s = {
@@ -1667,52 +1717,34 @@
     );
   }
 
-  function getPrimaryRecordTitle(item, index) {
-    return String(item.veri[7] || item.veri[10] || item.veri[1] || `Kayit ${index + 1}`).trim();
+  function getPrimaryRecordTitle(item, index, visibleColumns = getVisibleExportColumns()) {
+    const visibleIndexes = getVisibleColumnIndexSet(visibleColumns);
+    const preferredIndexes = [7, 10, 1, 2, 9];
+    for (const candidate of preferredIndexes) {
+      if (!visibleIndexes.has(candidate)) continue;
+      const value = String(nv(getColumnValueByIndex(item, candidate), '')).trim();
+      if (value) return value;
+    }
+    return `Kayıt ${index + 1}`;
   }
 
-  function buildPdfFieldRows(item) {
+  function getPrimaryRecordSubtitle(item, visibleColumns = getVisibleExportColumns()) {
+    const visibleIndexes = getVisibleColumnIndexSet(visibleColumns);
+    const preferredIndexes = [10, 1, 17, 9, 2];
+    for (const candidate of preferredIndexes) {
+      if (!visibleIndexes.has(candidate)) continue;
+      const value = String(nv(getColumnValueByIndex(item, candidate), '')).trim();
+      if (value) return value;
+    }
+    return 'Kayıt detayı';
+  }
+
+  function buildPdfFieldRows(item, visibleColumns = getVisibleExportColumns()) {
     return [
-      ['Üye Sicil', item.veri[1]],
-      ['Ticaret Sicil', item.veri[2]],
-      ['Mersis No', item.veri[3]],
-      ['Nace Kodu', item.veri[4]],
-      ['Vergi No', item.veri[5]],
-      ['Meslek Grubu', item.veri[6]],
-      ['Ünvan', item.veri[7]],
-      ['Adres', item.veri[8]],
-      ['İlçe', item.veri[9]],
-      ['Yetkili Adı 1', item.veri[10]],
-      ['Yetkili Adı 2', item.veri[11]],
-      ['Yetkili Adı 3', item.veri[12]],
-      ['Firma Sabit Tel', item.veri[13]],
-      ['Yetkili GSM 1', item.veri[14]],
-      ['Yetkili GSM 2', item.veri[15]],
-      ['Yetkili GSM 3', item.veri[16]],
-      ['E-Posta', item.veri[17]],
-      ['Instagram', item.veri[18]],
-      ['Facebook', item.veri[19]],
-      ['X', item.veri[20]],
-      ['Linkedin', item.veri[21]],
-      ['Referans 1', item.veri[22]],
-      ['Referans 2', item.veri[23]],
-      ['Referans 3', item.veri[24]],
-      ['Not', item.veri[25]],
-      ['Ulusal Olma Durumu', item.ulusal],
-      ['Ziyaret 1', item.ziyaret1],
-      ['Ziyaret 1 Notu', item.ziyaret1Not],
-      ['Ziyaret 1 Tarihi', item.ziyaret1Tarih],
-      ['Ziyaret 2', item.ziyaret2],
-      ['Ziyaret 2 Notu', item.ziyaret2Not],
-      ['Ziyaret 2 Tarihi', item.ziyaret2Tarih],
-      ['Telefon Görüşmesi', item.telefonGorusmesi],
-      ['Telefon Görüşmesi Notu', item.telefonGorusmesiNot],
-      ['Telefon Görüşmesi Tarihi', item.telefonGorusmesiTarih],
-      ['Askı Olma Durumu', item.aski],
-      ['2 Yıl Olma Durumu', item.ikiYil],
-      ['Oy', item.oy],
-      ['Bildirim Durumu', item.bildirim],
-      ['Tablo Tarihi', item.tarih]
+      ...visibleColumns
+        .filter(column => column.index !== 0)
+        .map(column => [column.title, getColumnValueByIndex(item, column.index)]),
+      [NOTIFICATION_EXPORT_TITLE, item.bildirim]
     ].map(([label, value]) => [label, formatExportValue(value)]);
   }
 
@@ -1850,18 +1882,54 @@
     `;
   }
 
+  function arrayBufferToBinaryString(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let result = '';
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      result += String.fromCharCode(...chunk);
+    }
+    return result;
+  }
+
+  async function fetchPdfFontBinary(path) {
+    const response = await fetch(path, { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`Font yüklenemedi: ${path}`);
+    return arrayBufferToBinaryString(await response.arrayBuffer());
+  }
+
+  async function ensurePdfFontsLoaded(pdf) {
+    if (!pdfFontLoadPromise) {
+      pdfFontLoadPromise = Promise.all([
+        fetchPdfFontBinary('fonts/NotoSans-Regular.ttf'),
+        fetchPdfFontBinary('fonts/NotoSans-Bold.ttf')
+      ]).then(([regular, bold]) => ({ regular, bold })).catch(error => {
+        pdfFontLoadPromise = null;
+        throw error;
+      });
+    }
+    const fonts = await pdfFontLoadPromise;
+    pdf.addFileToVFS(PDF_FONT_REGULAR_VFS, fonts.regular);
+    pdf.addFont(PDF_FONT_REGULAR_VFS, PDF_FONT_FAMILY, 'normal');
+    pdf.addFileToVFS(PDF_FONT_BOLD_VFS, fonts.bold);
+    pdf.addFont(PDF_FONT_BOLD_VFS, PDF_FONT_FAMILY, 'bold');
+  }
+
   function loadPdfImageData(src) {
     const value = String(nv(src, '')).trim();
     if (!/^data:image\//i.test(value)) return Promise.resolve(null);
+    const formatMatch = value.match(/^data:image\/([a-z0-9+]+)/i);
+    const format = formatMatch ? formatMatch[1].toUpperCase().replace('JPG', 'JPEG') : 'JPEG';
     return new Promise(resolve => {
       const image = new Image();
-      image.onload = () => resolve(image);
+      image.onload = () => resolve({ element: image, format });
       image.onerror = () => resolve(null);
       image.src = value;
     });
   }
 
-  async function exportRowsAsPdf(data, reportTitle = 'Uye Raporu') {
+  async function exportRowsAsPdf(data, reportTitle = 'Üye Raporu') {
     if (!data.length) {
       alert('PDF için en az bir satır seçmelisin.');
       return;
@@ -1877,6 +1945,16 @@
     const margin = 12;
     const contentWidth = pageWidth - (margin * 2);
     const lineHeight = 5;
+    const visibleColumns = getVisibleExportColumns();
+    const visibleIndexes = getVisibleColumnIndexSet(visibleColumns);
+    let pdfFontFamily = 'helvetica';
+
+    try {
+      await ensurePdfFontsLoaded(pdf);
+      pdfFontFamily = PDF_FONT_FAMILY;
+    } catch (error) {
+      console.warn('PDF fontları yüklenemedi, varsayılan font kullanılacak.', error);
+    }
 
     const ensureSpace = heightNeeded => {
       if (cursorY + heightNeeded <= pageHeight - margin) return;
@@ -1885,12 +1963,12 @@
     };
 
     const drawChip = (text, x, y, fillColor, textColor = [15, 23, 42]) => {
+      pdf.setFont(pdfFontFamily, 'bold');
+      pdf.setFontSize(9);
       const chipWidth = Math.min(Math.max(pdf.getTextWidth(text) + 8, 24), contentWidth - (x - margin));
       pdf.setFillColor(...fillColor);
       pdf.roundedRect(x, y, chipWidth, 7, 3, 3, 'F');
       pdf.setTextColor(...textColor);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9);
       pdf.text(text, x + 4, y + 4.8);
       return chipWidth;
     };
@@ -1902,15 +1980,21 @@
       pdf.setDrawColor(226, 232, 240);
       pdf.setFillColor(248, 250, 252);
       pdf.roundedRect(x, y, width, boxHeight, 2.5, 2.5, 'FD');
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont(pdfFontFamily, 'bold');
       pdf.setFontSize(8);
       pdf.setTextColor(30, 58, 138);
-      pdf.text(label.toUpperCase(), x + 3, y + 4.5);
-      pdf.setFont('helvetica', 'normal');
+      pdf.text(label.toLocaleUpperCase('tr-TR'), x + 3, y + 4.5);
+      pdf.setFont(pdfFontFamily, 'normal');
       pdf.setFontSize(9);
       pdf.setTextColor(15, 23, 42);
       pdf.text(valueLines, x + 3, y + 9);
       return boxHeight;
+    };
+
+    const measureDetailItemHeight = (value, width) => {
+      const safeValue = formatExportValue(value);
+      const valueLines = pdf.splitTextToSize(safeValue, width - 6);
+      return Math.max(15, 7 + (valueLines.length * 4.2));
     };
 
     let cursorY = margin;
@@ -1918,22 +2002,20 @@
     pdf.setFillColor(15, 23, 42);
     pdf.roundedRect(margin, cursorY, contentWidth, 24, 6, 6, 'F');
     pdf.setTextColor(255, 255, 255);
-    pdf.setFont('helvetica', 'bold');
+    pdf.setFont(pdfFontFamily, 'bold');
     pdf.setFontSize(20);
     pdf.text(reportTitle, margin + 6, cursorY + 9);
-    pdf.setFont('helvetica', 'normal');
+    pdf.setFont(pdfFontFamily, 'normal');
     pdf.setFontSize(10);
-    pdf.text(`Olusturulma: ${tarih()} | Kayit sayisi: ${data.length}`, margin + 6, cursorY + 16);
+    pdf.text(`Oluşturulma: ${tarih()} | Kayıt sayısı: ${data.length}`, margin + 6, cursorY + 16);
     cursorY += 32;
 
     for (let index = 0; index < data.length; index += 1) {
       const item = data[index];
-      const detailRows = buildPdfFieldRows(item);
-      const imageSource = String(nv(item.veri[0], '')).trim();
-      const image = await loadPdfImageData(imageSource);
-      const cardStartY = cursorY;
-      const cardHeightEstimate = 42 + (Math.ceil(detailRows.length / 2) * 22);
-      ensureSpace(Math.min(cardHeightEstimate, pageHeight - (margin * 2)));
+      const detailRows = buildPdfFieldRows(item, visibleColumns);
+      const imageSource = visibleIndexes.has(0) ? String(nv(item.veri[0], '')).trim() : '';
+      const image = imageSource ? await loadPdfImageData(imageSource) : null;
+      ensureSpace(42);
 
       pdf.setDrawColor(219, 229, 243);
       pdf.setFillColor(255, 255, 255);
@@ -1944,31 +2026,48 @@
       let textStartX = margin + 5;
       if (image) {
         try {
-          pdf.addImage(image, 'JPEG', margin + 4, cursorY + 4, 28, 28, undefined, 'FAST');
+          pdf.addImage(image.element, image.format, margin + 4, cursorY + 4, 28, 28, undefined, 'FAST');
           textStartX = margin + 37;
         } catch (error) {
         }
       }
 
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont(pdfFontFamily, 'bold');
       pdf.setFontSize(15);
       pdf.setTextColor(15, 23, 42);
-      pdf.text(getPrimaryRecordTitle(item, index), textStartX, cursorY + 8);
-      pdf.setFont('helvetica', 'normal');
+      pdf.text(getPrimaryRecordTitle(item, index, visibleColumns), textStartX, cursorY + 8);
+      pdf.setFont(pdfFontFamily, 'normal');
       pdf.setFontSize(10);
-      pdf.text(formatExportValue(item.veri[7] || item.veri[10] || 'Kayit detayi'), textStartX, cursorY + 15);
+      pdf.text(formatExportValue(getPrimaryRecordSubtitle(item, visibleColumns)), textStartX, cursorY + 15);
 
       let chipX = textStartX;
       const chipY = cursorY + 20;
-      chipX += drawChip(`Oy: ${formatExportValue(item.oy)}`, chipX, chipY, item.oy === 'EVET'
-        ? [220, 252, 231]
-        : item.oy === 'ORTA'
-          ? [254, 243, 199]
-          : item.oy === 'HAYIR'
-            ? [254, 226, 226]
-            : [226, 232, 240]) + 3;
-      chipX += drawChip(`Bildirim: ${formatExportValue(item.bildirim)}`, chipX, chipY, item.bildirim === 'EVET' ? [219, 234, 254] : [241, 245, 249]) + 3;
-      drawChip(`Ilce: ${formatExportValue(item.veri[9])}`, chipX, chipY, [241, 245, 249]);
+      const chipDefinitions = [];
+      if (visibleIndexes.has(TABLE_INDEX.OY)) {
+        chipDefinitions.push({
+          text: `Oy: ${formatExportValue(item.oy)}`,
+          fillColor: item.oy === 'EVET'
+            ? [220, 252, 231]
+            : item.oy === 'ORTA'
+              ? [254, 243, 199]
+              : item.oy === 'HAYIR'
+                ? [254, 226, 226]
+                : [226, 232, 240]
+        });
+      }
+      chipDefinitions.push({
+        text: `Bildirim: ${formatExportValue(item.bildirim)}`,
+        fillColor: item.bildirim === 'EVET' ? [219, 234, 254] : [241, 245, 249]
+      });
+      if (visibleIndexes.has(DISTRICT_COLUMN_INDEX)) {
+        chipDefinitions.push({
+          text: `İlçe: ${formatExportValue(item.veri[9])}`,
+          fillColor: [241, 245, 249]
+        });
+      }
+      chipDefinitions.forEach(chip => {
+        chipX += drawChip(chip.text, chipX, chipY, chip.fillColor, chip.textColor) + 3;
+      });
 
       cursorY += 40;
 
@@ -1977,10 +2076,12 @@
       for (let rowIndex = 0; rowIndex < detailRows.length; rowIndex += 2) {
         const left = detailRows[rowIndex];
         const right = detailRows[rowIndex + 1];
+        const leftHeightEstimate = measureDetailItemHeight(left[1], columnWidth);
+        const rightHeightEstimate = right ? measureDetailItemHeight(right[1], columnWidth) : leftHeightEstimate;
+        ensureSpace(Math.max(leftHeightEstimate, rightHeightEstimate) + 4);
         const leftHeight = drawDetailItem(left[0], left[1], margin, cursorY, columnWidth);
         const rightHeight = right ? drawDetailItem(right[0], right[1], margin + columnWidth + columnGap, cursorY, columnWidth) : leftHeight;
         cursorY += Math.max(leftHeight, rightHeight) + 4;
-        if (rowIndex < detailRows.length - 2) ensureSpace(24);
       }
 
       pdf.setDrawColor(203, 213, 225);
@@ -2003,12 +2104,12 @@
       return;
     }
     if (format === 'pdf') {
-      exportRowsAsPdf(data, 'Secili Uye Raporu').catch(error => {
+      exportRowsAsPdf(data, 'Seçili Üye Raporu').catch(error => {
         console.error(error);
         alert('PDF oluşturulurken beklenmeyen bir hata oluştu.');
       });
     } else {
-      exportRowsAsExcel(data, 'Secili Uye Raporu');
+      exportRowsAsExcel(data, 'Seçili Üye Raporu');
     }
     closeShareMenu();
   }
@@ -2119,7 +2220,7 @@
   }
 
   function excel() {
-    exportRowsAsExcel(getTableData(), 'Tum Uye Listesi');
+    exportRowsAsExcel(getTableData(), 'Tüm Üye Listesi');
   }
 
   function exceldenYukle(input) {
