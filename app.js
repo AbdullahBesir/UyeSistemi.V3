@@ -46,7 +46,11 @@
     'Ziyaret 2 Tarihi', 'Telefon Görüşmesi', 'Telefon Görüşmesi Notu', 'Telefon Görüşmesi Tarihi',
     'Askı Olma Durumu', '2 Yıl Olma Durumu', 'Oy', 'Tarih'
   ];
+  const NOTIFICATION_COLUMN_INDEX = COLUMN_TITLES.length;
+  const SHARE_COLUMN_INDEX = COLUMN_TITLES.length + 1;
+  const ACTION_COLUMN_INDEX = COLUMN_TITLES.length + 2;
   const HEADER_TITLES = ['Resim (Üye Resmi)', ...COLUMN_TITLES.slice(1)];
+  const EXPORT_COLUMN_TITLES = [...HEADER_TITLES, 'Bildirim Durumu'];
   const TABLE_INDEX = {
     ULUSAL: 26,
     ZIYARET1: 27,
@@ -122,7 +126,8 @@
       { name: '2 yil durumu', legacyInverted: true }
     ],
     oy: [{ name: 'oy' }],
-    tarih: [{ name: 'tarih' }]
+    tarih: [{ name: 'tarih' }],
+    bildirim: [{ name: 'bildirim' }, { name: 'bildirim durumu' }]
   };
 
   let chartInstance = null;
@@ -131,8 +136,7 @@
   let aktifDuzenlemeId = null;
   let kayitlar = cloneDefaultNameRecords();
   let loginLockInterval = null;
-  let activeNotificationRow = null;
-  let notificationTimer = null;
+  let notificationPriorityEnabled = false;
   const supabaseConfig = window.SUPABASE_CONFIG || {};
   const supabaseClient = window.supabase && supabaseConfig.url && supabaseConfig.anonKey
     ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
@@ -305,7 +309,8 @@
       aski: normalizeRestrictedStatus(row.aski, legacySchema),
       ikiYil: normalizeRestrictedStatus(row.ikiYil, legacySchema),
       oy: normalizeVote(row.oy),
-      tarih: String(nv(row.tarih, tarih()))
+      tarih: String(nv(row.tarih, tarih())),
+      bildirim: normalizeYesNo(row.bildirim, 'HAYIR')
     };
   }
 
@@ -742,7 +747,11 @@
         ${escapeHtml(title)}
         <span class="col-resizer" onmousedown="sutunBoyutlandirBaslat(event, ${index})"></span>
       </th>
-    `).join('') + `<th data-col="${COLUMN_TITLES.length}">İşlem</th>`;
+    `).join('') + `
+      <th data-col="${NOTIFICATION_COLUMN_INDEX}" oncontextmenu="kolonMenuAc(event, ${NOTIFICATION_COLUMN_INDEX})">Bildirim</th>
+      <th data-col="${SHARE_COLUMN_INDEX}">Paylaş</th>
+      <th data-col="${ACTION_COLUMN_INDEX}">İşlem</th>
+    `;
   }
 
   function voteClass(value) {
@@ -823,53 +832,146 @@
   function getCellValue(td) {
     const input = td.querySelector('input.cell, textarea.cell, select.cell');
     if (input) return input.value || '';
+    const notificationButton = td.querySelector('.notification-toggle');
+    if (notificationButton) return notificationButton.dataset.value || 'HAYIR';
     const vote = td.querySelector('.vote');
     if (vote) return vote.dataset.val || vote.textContent || '';
     return td.textContent || '';
   }
 
-  function clearCellNotification() {
-    if (notificationTimer) {
-      clearTimeout(notificationTimer);
-      notificationTimer = null;
+  function clearCellNotification(row = null) {
+    const rows = row ? [row] : [...document.querySelectorAll('#tablo tbody tr.row-notification-flash')];
+    rows.forEach(item => {
+      if (item && item.__notificationTimer) {
+        clearTimeout(item.__notificationTimer);
+        item.__notificationTimer = null;
+      }
+      if (item) item.classList.remove('row-notification-flash');
+    });
+  }
+
+  function setNotificationState(row, isActive, options = {}) {
+    if (!row) return;
+    row.dataset.notification = isActive ? 'EVET' : 'HAYIR';
+    row.classList.toggle('row-notification-active', isActive);
+    const button = row.querySelector('.notification-toggle');
+    if (button) {
+      button.dataset.value = row.dataset.notification;
+      button.classList.toggle('is-active', isActive);
+      button.textContent = isActive ? 'Bildirim Açık' : 'Bildirim Kapalı';
+      button.title = isActive
+        ? 'Bildirim işaretini kaldırmak için tıkla.'
+        : 'Satırı bildirimli olarak işaretlemek için tıkla.';
     }
-    if (activeNotificationRow) {
-      activeNotificationRow.classList.remove('row-notification');
-      activeNotificationRow = null;
+    if (options.flash) {
+      clearCellNotification(row);
+      row.classList.add('row-notification-flash');
+      row.__notificationTimer = window.setTimeout(() => {
+        clearCellNotification(row);
+      }, CELL_NOTIFICATION_DURATION_MS);
     }
   }
 
   function satirBildirimGoster(btn) {
     const row = btn && btn.closest ? btn.closest('tr') : null;
     if (!row) return;
-    clearCellNotification();
-    activeNotificationRow = row;
-    activeNotificationRow.classList.add('row-notification');
-    notificationTimer = window.setTimeout(clearCellNotification, CELL_NOTIFICATION_DURATION_MS);
+    const nextState = row.dataset.notification !== 'EVET';
+    setNotificationState(row, nextState, { flash: nextState });
+    autoSaveDraft();
+    filtre();
+  }
+
+  function setShareSelectionState(row, isSelected) {
+    if (!row) return;
+    row.dataset.shareSelected = isSelected ? '1' : '0';
+    row.classList.toggle('row-share-selected', isSelected);
+    const button = row.querySelector('.share-toggle');
+    if (button) {
+      button.classList.toggle('is-active', isSelected);
+      button.textContent = isSelected ? 'Seçildi' : 'Seç';
+      button.title = isSelected
+        ? 'Paylaşım listesinden çıkarmak için tıkla.'
+        : 'Bu satırı paylaşım listesine eklemek için tıkla.';
+    }
+  }
+
+  function updateShareSelectionSummary() {
+    const selectedCount = document.querySelectorAll('#tablo tbody tr[data-share-selected="1"]').length;
+    const summary = qs('shareSummary');
+    const shareButton = qs('shareButton');
+    if (summary) {
+      summary.textContent = selectedCount
+        ? `${selectedCount} satır paylaşım için seçildi.`
+        : 'Paylaşım için henüz satır seçilmedi.';
+    }
+    if (shareButton) shareButton.disabled = selectedCount === 0;
+    if (!selectedCount) closeShareMenu();
+  }
+
+  function toggleShareSelection(btn) {
+    const row = btn && btn.closest ? btn.closest('tr') : null;
+    if (!row) return;
+    setShareSelectionState(row, row.dataset.shareSelected !== '1');
+    updateShareSelectionSummary();
+  }
+
+  function closeShareMenu() {
+    const menu = qs('shareMenu');
+    if (menu) menu.classList.add('hidden');
+  }
+
+  function toggleShareMenu() {
+    const selectedCount = document.querySelectorAll('#tablo tbody tr[data-share-selected="1"]').length;
+    if (!selectedCount) {
+      alert('Önce paylaşılacak en az bir satır seçmelisin.');
+      return;
+    }
+    const menu = qs('shareMenu');
+    if (!menu) return;
+    menu.classList.toggle('hidden');
+  }
+
+  function getRowData(row) {
+    const cells = [...row.querySelectorAll('td')];
+    return normalizeRowRecord({
+      veri: cells.slice(0, BASE_VALUE_COUNT).map(td => getCellValue(td)),
+      ulusal: getCellValue(cells[TABLE_INDEX.ULUSAL]),
+      ziyaret1: getCellValue(cells[TABLE_INDEX.ZIYARET1]),
+      ziyaret1Not: getCellValue(cells[TABLE_INDEX.ZIYARET1_NOT]),
+      ziyaret1Tarih: getCellValue(cells[TABLE_INDEX.ZIYARET1_TARIH]),
+      ziyaret2: getCellValue(cells[TABLE_INDEX.ZIYARET2]),
+      ziyaret2Not: getCellValue(cells[TABLE_INDEX.ZIYARET2_NOT]),
+      ziyaret2Tarih: getCellValue(cells[TABLE_INDEX.ZIYARET2_TARIH]),
+      telefonGorusmesi: getCellValue(cells[TABLE_INDEX.TELEFON]),
+      telefonGorusmesiNot: getCellValue(cells[TABLE_INDEX.TELEFON_NOT]),
+      telefonGorusmesiTarih: getCellValue(cells[TABLE_INDEX.TELEFON_TARIH]),
+      aski: getCellValue(cells[TABLE_INDEX.ASKI]),
+      ikiYil: getCellValue(cells[TABLE_INDEX.IKI_YIL]),
+      oy: getCellValue(cells[TABLE_INDEX.OY]),
+      tarih: cells[TABLE_INDEX.TARIH].textContent.trim() || tarih(),
+      bildirim: row.dataset.notification || 'HAYIR'
+    });
+  }
+
+  function getSelectedTableData() {
+    return [...document.querySelectorAll('#tablo tbody tr[data-share-selected="1"]')].map(getRowData);
+  }
+
+  function moveNotificationRowsToTop() {
+    const tbody = qs('tablo').querySelector('tbody');
+    const rows = [...tbody.querySelectorAll('tr')];
+    rows
+      .sort((a, b) => {
+        const aScore = a.dataset.notification === 'EVET' ? 1 : 0;
+        const bScore = b.dataset.notification === 'EVET' ? 1 : 0;
+        return bScore - aScore;
+      })
+      .forEach(row => tbody.appendChild(row));
   }
 
   function getTableData() {
     const rows = [...qs('tablo').querySelectorAll('tbody tr')];
-    return rows.map(row => {
-      const cells = [...row.querySelectorAll('td')];
-      return normalizeRowRecord({
-        veri: cells.slice(0, BASE_VALUE_COUNT).map(td => getCellValue(td)),
-        ulusal: getCellValue(cells[TABLE_INDEX.ULUSAL]),
-        ziyaret1: getCellValue(cells[TABLE_INDEX.ZIYARET1]),
-        ziyaret1Not: getCellValue(cells[TABLE_INDEX.ZIYARET1_NOT]),
-        ziyaret1Tarih: getCellValue(cells[TABLE_INDEX.ZIYARET1_TARIH]),
-        ziyaret2: getCellValue(cells[TABLE_INDEX.ZIYARET2]),
-        ziyaret2Not: getCellValue(cells[TABLE_INDEX.ZIYARET2_NOT]),
-        ziyaret2Tarih: getCellValue(cells[TABLE_INDEX.ZIYARET2_TARIH]),
-        telefonGorusmesi: getCellValue(cells[TABLE_INDEX.TELEFON]),
-        telefonGorusmesiNot: getCellValue(cells[TABLE_INDEX.TELEFON_NOT]),
-        telefonGorusmesiTarih: getCellValue(cells[TABLE_INDEX.TELEFON_TARIH]),
-        aski: getCellValue(cells[TABLE_INDEX.ASKI]),
-        ikiYil: getCellValue(cells[TABLE_INDEX.IKI_YIL]),
-        oy: getCellValue(cells[TABLE_INDEX.OY]),
-        tarih: cells[TABLE_INDEX.TARIH].textContent.trim() || tarih()
-      });
-    });
+    return rows.map(getRowData);
   }
 
   function getDraft() {
@@ -1000,14 +1102,13 @@
       <td>${evetHayirSelect(item.ikiYil, 'ikiyil-select')}</td>
       <td>${oyDiv(item.oy)}</td>
       <td class="meta">${escapeHtml(item.tarih)}</td>
-      <td>
-        <div class="row-actions">
-          <button type="button" class="btn-secondary" onclick="satirBildirimGoster(this)">Bildirim</button>
-          <button type="button" class="btn-danger" onclick="sil(this)">Sil</button>
-        </div>
-      </td>
+      <td class="utility-cell"><button type="button" class="btn-secondary notification-toggle" onclick="satirBildirimGoster(this)">Bildirim Kapalı</button></td>
+      <td class="utility-cell"><button type="button" class="btn-light share-toggle" onclick="toggleShareSelection(this)">Seç</button></td>
+      <td class="utility-cell"><button type="button" class="btn-danger" onclick="sil(this)">Sil</button></td>
     `;
     qs('tablo').querySelector('tbody').appendChild(tr);
+    setNotificationState(tr, item.bildirim === 'EVET');
+    setShareSelectionState(tr, false);
     satirRenkGuncelle(tr);
     applyHiddenColumns();
     if (!options.skipSave) autoSaveDraft();
@@ -1020,6 +1121,7 @@
     tbody.innerHTML = '';
     if (Array.isArray(data) && data.length) data.forEach(item => satirEkle(item, { skipSave: true }));
     else satirEkle(null, { skipSave: true });
+    updateShareSelectionSummary();
     autoSaveDraft();
   }
 
@@ -1073,6 +1175,9 @@
     ].includes(columnIndex)) {
       return { type: 'exact', options: ['EVET', 'HAYIR'], placeholder: 'Tüm Durumlar' };
     }
+    if (columnIndex === NOTIFICATION_COLUMN_INDEX) {
+      return { type: 'exact', options: ['EVET', 'HAYIR'], placeholder: 'Tüm Bildirimler' };
+    }
     if (columnIndex === TABLE_INDEX.OY) {
       return { type: 'exact', options: VOTE_SEQUENCE, placeholder: 'Tüm Oylar' };
     }
@@ -1117,11 +1222,13 @@
       row.style.display = show ? '' : 'none';
       if (show && hasAnyFilter) row.classList.add('filtered-row');
     });
+    if (notificationPriorityEnabled) moveNotificationRowsToTop();
   }
 
   function filtreTemizle() {
     qs('oyFiltre').value = '';
     activeColumnFilter = null;
+    notificationPriorityEnabled = false;
     contextMenuKapat();
     document.querySelectorAll('#tablo tbody tr').forEach(row => {
       row.style.display = '';
@@ -1135,6 +1242,8 @@
     const title = qs('tablo').querySelector(`th[data-col="${columnIndex}"]`).textContent || 'Kolon';
     const filterDefinition = getColumnFilterDefinition(columnIndex);
     const activeValue = activeColumnFilter && activeColumnFilter.index === columnIndex ? activeColumnFilter.text : '';
+    const isBaseColumn = columnIndex < COLUMN_TITLES.length;
+    const isNotificationColumn = columnIndex === NOTIFICATION_COLUMN_INDEX;
     const menu = document.createElement('div');
     menu.className = 'context-menu';
     menu.innerHTML = `
@@ -1150,7 +1259,8 @@
       }
       <button type="button" id="contextApply">Filtrele</button>
       <button type="button" id="contextClear">Bu kolon filtresini temizle</button>
-      <button type="button" id="contextHide">Sütunu gizle</button>
+      ${isNotificationColumn ? `<button type="button" id="contextPriority">${notificationPriorityEnabled ? 'Bildirim önceliğini kapat' : 'Bildirimlileri en üste taşı'}</button>` : ''}
+      ${isBaseColumn ? `<button type="button" id="contextHide">Sütunu gizle</button>` : ''}
     `;
     menu.style.left = event.clientX + 'px';
     menu.style.top = event.clientY + 'px';
@@ -1166,10 +1276,19 @@
     menu.querySelector('#contextClear').onclick = () => {
       applyColumnFilter(columnIndex, '', filterDefinition.type);
     };
-    menu.querySelector('#contextHide').onclick = () => {
-      sutunGizle(columnIndex);
-      contextMenuKapat();
-    };
+    if (isNotificationColumn) {
+      menu.querySelector('#contextPriority').onclick = () => {
+        notificationPriorityEnabled = !notificationPriorityEnabled;
+        filtre();
+        contextMenuKapat();
+      };
+    }
+    if (isBaseColumn) {
+      menu.querySelector('#contextHide').onclick = () => {
+        sutunGizle(columnIndex);
+        contextMenuKapat();
+      };
+    }
     setTimeout(() => document.addEventListener('click', contextMenuKapat, { once: true }), 0);
   }
 
@@ -1306,6 +1425,7 @@
 
   function sil(btn) {
     btn.closest('tr').remove();
+    updateShareSelectionSummary();
     autoSaveDraft();
     filtre();
   }
@@ -1400,8 +1520,355 @@
     return [
       ...item.veri, item.ulusal, item.ziyaret1, item.ziyaret1Not, item.ziyaret1Tarih,
       item.ziyaret2, item.ziyaret2Not, item.ziyaret2Tarih, item.telefonGorusmesi,
-      item.telefonGorusmesiNot, item.telefonGorusmesiTarih, item.aski, item.ikiYil, item.oy, item.tarih
+      item.telefonGorusmesiNot, item.telefonGorusmesiTarih, item.aski, item.ikiYil, item.oy, item.tarih, item.bildirim
     ];
+  }
+
+  function getVoteRowColor(item) {
+    if (item.aski === 'EVET' || item.ikiYil === 'EVET') return '#e2e8f0';
+    if (item.oy === 'EVET') return '#dcfce7';
+    if (item.oy === 'ORTA') return '#fef3c7';
+    if (item.oy === 'HAYIR') return '#fee2e2';
+    return '#f8fafc';
+  }
+
+  function buildExportFileName(prefix, count, extension) {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    return `${prefix}-${count}-satir-${stamp}.${extension}`;
+  }
+
+  function downloadBlob(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function buildExcelHtml(data, reportTitle) {
+    const rowsHtml = data.map((item, rowIndex) => `
+      <tr style="background:${getVoteRowColor(item)};">
+        ${buildRowExportArray(item).map(value => `
+          <td style="border:1px solid #cbd5e1;padding:8px 10px;vertical-align:top;">${escapeHtml(value)}</td>
+        `).join('')}
+      </tr>
+    `).join('');
+    return `\ufeff
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: Segoe UI, Arial, sans-serif; background: #f8fafc; color: #0f172a; }
+            .sheet { padding: 24px; }
+            .sheet h1 { margin: 0 0 8px; font-size: 24px; }
+            .sheet p { margin: 0 0 18px; color: #475569; }
+            table { border-collapse: collapse; width: 100%; }
+            th {
+              background: linear-gradient(180deg, #1d4ed8, #1e3a8a);
+              color: #ffffff;
+              font-weight: 700;
+              border: 1px solid #93c5fd;
+              padding: 10px;
+              text-align: left;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="sheet">
+            <h1>${escapeHtml(reportTitle)}</h1>
+            <p>Olusturulma: ${escapeHtml(tarih())} | Satir sayisi: ${data.length}</p>
+            <table>
+              <thead>
+                <tr>${EXPORT_COLUMN_TITLES.map(title => `<th>${escapeHtml(title)}</th>`).join('')}</tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        </body>
+      </html>
+    `;
+  }
+
+  function exportRowsAsExcel(data, reportTitle = 'Uye Raporu') {
+    if (!data.length) {
+      alert('Dışa aktarılacak satır bulunamadı.');
+      return;
+    }
+    const html = buildExcelHtml(data, reportTitle);
+    downloadBlob(
+      buildExportFileName('uye-raporu', data.length, 'xls'),
+      html,
+      'application/vnd.ms-excel;charset=utf-8'
+    );
+  }
+
+  function getPrimaryRecordTitle(item, index) {
+    return String(item.veri[7] || item.veri[10] || item.veri[1] || `Kayit ${index + 1}`).trim();
+  }
+
+  function buildPdfFieldRows(item) {
+    const rows = [
+      ['Üye Sicil', item.veri[1]],
+      ['Ticaret Sicil', item.veri[2]],
+      ['Mersis No', item.veri[3]],
+      ['Nace Kodu', item.veri[4]],
+      ['Vergi No', item.veri[5]],
+      ['Meslek Grubu', item.veri[6]],
+      ['Ünvan', item.veri[7]],
+      ['Adres', item.veri[8]],
+      ['İlçe', item.veri[9]],
+      ['Yetkili Adı 1', item.veri[10]],
+      ['Yetkili Adı 2', item.veri[11]],
+      ['Yetkili Adı 3', item.veri[12]],
+      ['Firma Sabit Tel', item.veri[13]],
+      ['Yetkili GSM 1', item.veri[14]],
+      ['Yetkili GSM 2', item.veri[15]],
+      ['Yetkili GSM 3', item.veri[16]],
+      ['E-Posta', item.veri[17]],
+      ['Instagram', item.veri[18]],
+      ['Facebook', item.veri[19]],
+      ['X', item.veri[20]],
+      ['Linkedin', item.veri[21]],
+      ['Referans 1', item.veri[22]],
+      ['Referans 2', item.veri[23]],
+      ['Referans 3', item.veri[24]],
+      ['Not', item.veri[25]],
+      ['Ulusal Olma Durumu', item.ulusal],
+      ['Ziyaret 1', item.ziyaret1],
+      ['Ziyaret 1 Notu', item.ziyaret1Not],
+      ['Ziyaret 1 Tarihi', item.ziyaret1Tarih],
+      ['Ziyaret 2', item.ziyaret2],
+      ['Ziyaret 2 Notu', item.ziyaret2Not],
+      ['Ziyaret 2 Tarihi', item.ziyaret2Tarih],
+      ['Telefon Görüşmesi', item.telefonGorusmesi],
+      ['Telefon Görüşmesi Notu', item.telefonGorusmesiNot],
+      ['Telefon Görüşmesi Tarihi', item.telefonGorusmesiTarih],
+      ['Askı Olma Durumu', item.aski],
+      ['2 Yıl Olma Durumu', item.ikiYil],
+      ['Oy', item.oy],
+      ['Bildirim Durumu', item.bildirim],
+      ['Tablo Tarihi', item.tarih]
+    ];
+    return rows.filter(([, value]) => String(nv(value, '')).trim() !== '');
+  }
+
+  function buildPdfReportMarkup(data, reportTitle) {
+    return `
+      <style>
+        .pdf-report {
+          width: 1120px;
+          padding: 40px;
+          background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+          color: #0f172a;
+          font-family: "Segoe UI", Arial, sans-serif;
+        }
+        .pdf-report * { box-sizing: border-box; }
+        .pdf-cover {
+          background: linear-gradient(135deg, #0f172a, #1d4ed8);
+          color: #fff;
+          border-radius: 28px;
+          padding: 28px 30px;
+          margin-bottom: 24px;
+          box-shadow: 0 18px 40px rgba(29, 78, 216, 0.22);
+        }
+        .pdf-cover h1 { margin: 0 0 8px; font-size: 34px; }
+        .pdf-cover p { margin: 0; font-size: 15px; color: rgba(255,255,255,0.85); }
+        .pdf-record {
+          page-break-inside: avoid;
+          background: #ffffff;
+          border: 1px solid #dbe5f3;
+          border-radius: 24px;
+          overflow: hidden;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+          margin-bottom: 22px;
+        }
+        .pdf-record-head {
+          display: grid;
+          grid-template-columns: 180px 1fr;
+          gap: 20px;
+          padding: 24px;
+          background: linear-gradient(180deg, rgba(219, 234, 254, 0.75), rgba(255,255,255,0.96));
+        }
+        .pdf-record-photo {
+          width: 180px;
+          height: 180px;
+          object-fit: cover;
+          border-radius: 20px;
+          border: 1px solid #cbd5e1;
+          background: #e2e8f0;
+        }
+        .pdf-record-summary h2 {
+          margin: 0 0 8px;
+          font-size: 28px;
+        }
+        .pdf-record-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin: 16px 0 0;
+        }
+        .pdf-chip {
+          border-radius: 999px;
+          padding: 8px 12px;
+          font-size: 13px;
+          font-weight: 700;
+        }
+        .pdf-chip.vote-evet { background: #dcfce7; color: #166534; }
+        .pdf-chip.vote-orta { background: #fef3c7; color: #92400e; }
+        .pdf-chip.vote-hayir { background: #fee2e2; color: #991b1b; }
+        .pdf-chip.vote-sec { background: #e2e8f0; color: #334155; }
+        .pdf-chip.notice-on { background: #dbeafe; color: #1d4ed8; }
+        .pdf-chip.notice-off { background: #f1f5f9; color: #475569; }
+        .pdf-detail-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          padding: 0 24px 24px;
+        }
+        .pdf-detail-item {
+          border: 1px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 12px 14px;
+          background: #f8fafc;
+        }
+        .pdf-detail-item strong {
+          display: block;
+          color: #1e3a8a;
+          margin-bottom: 6px;
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+        .pdf-detail-item span {
+          display: block;
+          color: #0f172a;
+          white-space: pre-wrap;
+          word-break: break-word;
+          line-height: 1.45;
+        }
+      </style>
+      <div class="pdf-report">
+        <div class="pdf-cover">
+          <h1>${escapeHtml(reportTitle)}</h1>
+          <p>Olusturulma: ${escapeHtml(tarih())} | Kayit sayisi: ${data.length}</p>
+        </div>
+        ${data.map((item, index) => {
+          const detailRows = buildPdfFieldRows(item).map(([label, value]) => `
+            <div class="pdf-detail-item">
+              <strong>${escapeHtml(label)}</strong>
+              <span>${escapeHtml(value)}</span>
+            </div>
+          `).join('');
+          const voteClass = item.oy === 'EVET' ? 'vote-evet' : item.oy === 'ORTA' ? 'vote-orta' : item.oy === 'HAYIR' ? 'vote-hayir' : 'vote-sec';
+          const imageValue = String(nv(item.veri[0], '')).trim();
+          return `
+            <section class="pdf-record">
+              <div class="pdf-record-head">
+                ${imageValue ? `<img class="pdf-record-photo" src="${escapeHtml(imageValue)}" alt="${escapeHtml(getPrimaryRecordTitle(item, index))}" onerror="this.style.display='none'">` : `<div class="pdf-record-photo"></div>`}
+                <div class="pdf-record-summary">
+                  <h2>${escapeHtml(getPrimaryRecordTitle(item, index))}</h2>
+                  <div>${escapeHtml(item.veri[7] || item.veri[10] || 'Kayit detayi')}</div>
+                  <div class="pdf-record-meta">
+                    <span class="pdf-chip ${voteClass}">Oy: ${escapeHtml(item.oy)}</span>
+                    <span class="pdf-chip ${item.bildirim === 'EVET' ? 'notice-on' : 'notice-off'}">Bildirim: ${escapeHtml(item.bildirim)}</span>
+                    <span class="pdf-chip notice-off">İlçe: ${escapeHtml(item.veri[9] || '-')}</span>
+                    <span class="pdf-chip notice-off">Tarih: ${escapeHtml(item.tarih)}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="pdf-detail-grid">${detailRows}</div>
+            </section>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  function waitForContainerImages(container) {
+    const images = [...container.querySelectorAll('img')].filter(img => img.getAttribute('src'));
+    if (!images.length) return Promise.resolve();
+    return Promise.all(images.map(img => new Promise(resolve => {
+      if (img.complete) {
+        resolve();
+        return;
+      }
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', resolve, { once: true });
+    })));
+  }
+
+  async function exportRowsAsPdf(data, reportTitle = 'Uye Raporu') {
+    if (!data.length) {
+      alert('PDF için en az bir satır seçmelisin.');
+      return;
+    }
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+      alert('PDF aracı yüklenemedi.');
+      return;
+    }
+    const container = document.createElement('div');
+    container.style.position = 'fixed';
+    container.style.left = '-20000px';
+    container.style.top = '0';
+    container.style.zIndex = '-1';
+    container.innerHTML = buildPdfReportMarkup(data, reportTitle);
+    document.body.appendChild(container);
+    try {
+      await waitForContainerImages(container);
+      const canvas = await html2canvas(container.firstElementChild, {
+        backgroundColor: '#f8fbff',
+        scale: 1.6,
+        useCORS: true
+      });
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = pageWidth;
+      const imgHeight = canvas.height * imgWidth / canvas.width;
+      const imgData = canvas.toDataURL('image/png');
+      let heightLeft = imgHeight;
+      let position = 0;
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= pageHeight;
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+        heightLeft -= pageHeight;
+      }
+      pdf.save(buildExportFileName('uye-raporu', data.length, 'pdf'));
+    } finally {
+      container.remove();
+    }
+  }
+
+  function paylasSecilenleri(format) {
+    const data = getSelectedTableData();
+    if (!data.length) {
+      alert('Paylaşım için seçili satır bulunamadı.');
+      return;
+    }
+    if (format === 'pdf') {
+      exportRowsAsPdf(data, 'Secili Uye Raporu').catch(error => {
+        console.error(error);
+        alert('PDF oluşturulurken beklenmeyen bir hata oluştu.');
+      });
+    } else {
+      exportRowsAsExcel(data, 'Secili Uye Raporu');
+    }
+    closeShareMenu();
+  }
+
+  function paylasSecimleriTemizle() {
+    document.querySelectorAll('#tablo tbody tr[data-share-selected="1"]').forEach(row => {
+      setShareSelectionState(row, false);
+    });
+    updateShareSelectionSummary();
   }
 
   function normalizeHeaderValue(value) {
@@ -1440,7 +1907,8 @@
       aski: normalizeRestrictedStatus(getValue('aski', 'HAYIR'), Boolean(headerMap.aski && headerMap.aski.legacyInverted)),
       ikiYil: normalizeRestrictedStatus(getValue('ikiYil', 'HAYIR'), Boolean(headerMap.ikiYil && headerMap.ikiYil.legacyInverted)),
       oy: getValue('oy', 'SEÇ'),
-      tarih: getValue('tarih', tarih())
+      tarih: getValue('tarih', tarih()),
+      bildirim: getValue('bildirim', 'HAYIR')
     });
   }
 
@@ -1502,18 +1970,7 @@
   }
 
   function excel() {
-    const exportTable = document.createElement('table');
-    exportTable.innerHTML = `<tr>${COLUMN_TITLES.map(title => `<th>${escapeHtml(title)}</th>`).join('')}</tr>`;
-    getTableData().forEach(item => {
-      const tr = document.createElement('tr');
-      buildRowExportArray(item).forEach(value => {
-        const td = document.createElement('td');
-        td.textContent = value;
-        tr.appendChild(td);
-      });
-      exportTable.appendChild(tr);
-    });
-    XLSX.writeFile(XLSX.utils.table_to_book(exportTable, { sheet: 'Uyeler' }), 'uyeler.xlsx');
+    exportRowsAsExcel(getTableData(), 'Tum Uye Listesi');
   }
 
   function exceldenYukle(input) {
@@ -1620,7 +2077,11 @@
       tumunuKaydet, excel, kolonMenuAc, sutunBoyutlandirBaslat, sil, oyDegistir, durumDegisti, sutunGoster,
       resimInputDegisti, resimSec, duzenlemeyiBaslat, ismiKaydet, duzenlemeyiIptalEt, kaydiYukle, kaydiSil,
       satirBildirimGoster,
-      autoSaveDraft
+      autoSaveDraft,
+      toggleShareSelection,
+      toggleShareMenu,
+      paylasSecilenleri,
+      paylasSecimleriTemizle
     });
     renderTableHeader();
     await seedDefaultUsers();
