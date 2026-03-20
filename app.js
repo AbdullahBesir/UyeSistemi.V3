@@ -1613,12 +1613,49 @@
       alert('Dışa aktarılacak satır bulunamadı.');
       return;
     }
-    const html = buildExcelHtml(data, reportTitle);
-    downloadBlob(
-      buildExportFileName('uye-raporu', data.length, 'xls'),
-      html,
-      'application/vnd.ms-excel;charset=utf-8'
-    );
+    if (!window.XLSX) {
+      alert('Excel aracı yüklenemedi.');
+      return;
+    }
+    const rows = [
+      EXPORT_COLUMN_TITLES,
+      ...data.map(item => buildRowExportArray(item).map(value => formatExportValue(value)))
+    ];
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    worksheet['!autofilter'] = {
+      ref: XLSX.utils.encode_range({
+        s: { r: 0, c: 0 },
+        e: { r: rows.length - 1, c: EXPORT_COLUMN_TITLES.length - 1 }
+      })
+    };
+    worksheet['!cols'] = EXPORT_COLUMN_TITLES.map((title, columnIndex) => {
+      const maxCellLength = rows.reduce((max, row) => Math.max(max, String(nv(row[columnIndex], '')).length), title.length);
+      return { wch: Math.min(Math.max(maxCellLength + 2, 12), 28) };
+    });
+    const headerStyle = {
+      font: { bold: true, color: { rgb: '000000' } },
+      fill: { patternType: 'solid', fgColor: { rgb: 'DBE5F3' } },
+      alignment: { vertical: 'top', wrapText: true }
+    };
+    rows[0].forEach((_, columnIndex) => {
+      const cellRef = XLSX.utils.encode_cell({ r: 0, c: columnIndex });
+      if (worksheet[cellRef]) worksheet[cellRef].s = headerStyle;
+    });
+    data.forEach((item, rowIndex) => {
+      const fillColor = getVoteRowColor(item).replace('#', '').toUpperCase();
+      buildRowExportArray(item).forEach((_, columnIndex) => {
+        const cellRef = XLSX.utils.encode_cell({ r: rowIndex + 1, c: columnIndex });
+        if (worksheet[cellRef]) {
+          worksheet[cellRef].s = {
+            alignment: { vertical: 'top', wrapText: true },
+            fill: { patternType: 'solid', fgColor: { rgb: fillColor } }
+          };
+        }
+      });
+    });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Uyeler');
+    XLSX.writeFile(workbook, buildExportFileName('uye-raporu', data.length, 'xlsx'));
   }
 
   function getPrimaryRecordTitle(item, index) {
@@ -1846,15 +1883,15 @@
       const pageHeight = pdf.internal.pageSize.getHeight();
       const imgWidth = pageWidth;
       const imgHeight = canvas.height * imgWidth / canvas.width;
-      const imgData = canvas.toDataURL('image/png');
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
       let heightLeft = imgHeight;
       let position = 0;
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
       heightLeft -= pageHeight;
       while (heightLeft > 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
         heightLeft -= pageHeight;
       }
       pdf.save(buildExportFileName('uye-raporu', data.length, 'pdf'));
